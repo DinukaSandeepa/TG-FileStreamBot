@@ -19,6 +19,10 @@ import (
 func (m *command) LoadStream(dispatcher dispatcher.Dispatcher) {
 	log := m.log.Named("start")
 	defer log.Sugar().Info("Loaded")
+	if config.ValueOf.LogChannelID == 0 {
+		log.Sugar().Info("LOG_CHANNEL is not configured, skipping legacy media forwarding handler")
+		return
+	}
 	dispatcher.AddHandler(
 		handlers.NewMessage(nil, sendLink),
 	)

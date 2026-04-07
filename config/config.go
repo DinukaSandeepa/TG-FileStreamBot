@@ -41,7 +41,7 @@ type config struct {
 	ApiID          int32        `envconfig:"API_ID" required:"true"`
 	ApiHash        string       `envconfig:"API_HASH" required:"true"`
 	BotToken       string       `envconfig:"BOT_TOKEN" required:"true"`
-	LogChannelID   int64        `envconfig:"LOG_CHANNEL" required:"true"`
+	LogChannelID   int64        `envconfig:"LOG_CHANNEL" default:"0"`
 	Dev            bool         `envconfig:"DEV" default:"false"`
 	Port           int          `envconfig:"PORT" default:"8080"`
 	Host           string       `envconfig:"HOST" default:""`
@@ -51,6 +51,14 @@ type config struct {
 	UsePublicIP    bool         `envconfig:"USE_PUBLIC_IP" default:"false"`
 	AllowedUsers   allowedUsers `envconfig:"ALLOWED_USERS"`
 	MultiTokens    []string
+
+	// Mongo and signed-link config
+	MongoURI            string `envconfig:"MONGO_URI" default:""`
+	MongoDB             string `envconfig:"MONGO_DB" default:""`
+	MongoCollection     string `envconfig:"MONGO_COLLECTION" default:"movies"`
+	StreamSigningSecret string `envconfig:"STREAM_SIGNING_SECRET" default:""`
+	StreamTokenTTLSec   int    `envconfig:"STREAM_TOKEN_TTL_SEC" default:"1800"`
+	LinkSignAPIKey      string `envconfig:"LINK_SIGN_API_KEY" default:""`
 
 	// stream specific config
 	StreamConcurrency int `envconfig:"STREAM_CONCURRENCY" default:"4"`
@@ -90,6 +98,12 @@ func SetFlagsFromConfig(cmd *cobra.Command) {
 	cmd.Flags().String("user-session", ValueOf.UserSession, "Pyrogram user session")
 	cmd.Flags().Bool("use-public-ip", ValueOf.UsePublicIP, "Use public IP instead of local IP")
 	cmd.Flags().String("multi-token-txt-file", "", "Multi token txt file (Not implemented)")
+	cmd.Flags().String("mongo-uri", ValueOf.MongoURI, "MongoDB connection string")
+	cmd.Flags().String("mongo-db", ValueOf.MongoDB, "MongoDB database name")
+	cmd.Flags().String("mongo-collection", ValueOf.MongoCollection, "MongoDB collection name for file metadata")
+	cmd.Flags().String("stream-signing-secret", ValueOf.StreamSigningSecret, "HMAC secret used to sign DB stream tokens")
+	cmd.Flags().Int("stream-token-ttl-sec", ValueOf.StreamTokenTTLSec, "Signed stream token TTL in seconds")
+	cmd.Flags().String("link-sign-api-key", ValueOf.LinkSignAPIKey, "API key required for link signing endpoint")
 	cmd.Flags().Int("stream-concurrency", ValueOf.StreamConcurrency, "Number of parallel block fetches")
 	cmd.Flags().Int("stream-buffer-count", ValueOf.StreamBufferCount, "Number of blocks to prefetch")
 	cmd.Flags().Int("stream-timeout-sec", ValueOf.StreamTimeoutSec, "Maximum time to wait for a single block (in seconds)")
@@ -146,6 +160,30 @@ func (c *config) loadConfigFromArgs(log *zap.Logger, cmd *cobra.Command) {
 		os.Setenv("MULTI_TOKEN_TXT_FILE", multiTokens)
 		// TODO: Add support for importing tokens from a separate file
 	}
+	mongoURI, _ := cmd.Flags().GetString("mongo-uri")
+	if mongoURI != "" {
+		os.Setenv("MONGO_URI", mongoURI)
+	}
+	mongoDB, _ := cmd.Flags().GetString("mongo-db")
+	if mongoDB != "" {
+		os.Setenv("MONGO_DB", mongoDB)
+	}
+	mongoCollection, _ := cmd.Flags().GetString("mongo-collection")
+	if mongoCollection != "" {
+		os.Setenv("MONGO_COLLECTION", mongoCollection)
+	}
+	streamSigningSecret, _ := cmd.Flags().GetString("stream-signing-secret")
+	if streamSigningSecret != "" {
+		os.Setenv("STREAM_SIGNING_SECRET", streamSigningSecret)
+	}
+	streamTokenTTLSec, _ := cmd.Flags().GetInt("stream-token-ttl-sec")
+	if streamTokenTTLSec != 0 {
+		os.Setenv("STREAM_TOKEN_TTL_SEC", strconv.Itoa(streamTokenTTLSec))
+	}
+	linkSignAPIKey, _ := cmd.Flags().GetString("link-sign-api-key")
+	if linkSignAPIKey != "" {
+		os.Setenv("LINK_SIGN_API_KEY", linkSignAPIKey)
+	}
 	streamConcurrency, _ := cmd.Flags().GetInt("stream-concurrency")
 	if streamConcurrency != 0 {
 		os.Setenv("STREAM_CONCURRENCY", strconv.Itoa(streamConcurrency))
@@ -167,6 +205,9 @@ func (c *config) loadConfigFromArgs(log *zap.Logger, cmd *cobra.Command) {
 func (c *config) setupEnvVars(log *zap.Logger, cmd *cobra.Command) {
 	c.loadFromEnvFile(log)
 	c.loadConfigFromArgs(log, cmd)
+	if strings.TrimSpace(os.Getenv("LOG_CHANNEL")) == "" {
+		os.Setenv("LOG_CHANNEL", "0")
+	}
 	err := envconfig.Process("", c)
 	if err != nil {
 		log.Fatal("Error while parsing env variables", zap.Error(err))
@@ -202,7 +243,11 @@ func Load(log *zap.Logger, cmd *cobra.Command) {
 	log = log.Named("Config")
 	defer log.Info("Loaded config")
 	ValueOf.setupEnvVars(log, cmd)
-	ValueOf.LogChannelID = int64(stripInt(log, int(ValueOf.LogChannelID)))
+	if ValueOf.LogChannelID == 0 {
+		log.Sugar().Info("LOG_CHANNEL is not set; legacy forwarding/hash routes are disabled unless you set LOG_CHANNEL")
+	} else {
+		ValueOf.LogChannelID = int64(stripInt(log, int(ValueOf.LogChannelID)))
+	}
 	if ValueOf.HashLength == 0 {
 		log.Sugar().Info("HASH_LENGTH can't be 0, defaulting to 6")
 		ValueOf.HashLength = 6
@@ -230,6 +275,19 @@ func Load(log *zap.Logger, cmd *cobra.Command) {
 	if ValueOf.StreamMaxRetries <= 0 {
 		log.Sugar().Info("STREAM_MAX_RETRIES must be greater than 0, defaulting to 3")
 		ValueOf.StreamMaxRetries = 3
+	}
+	if ValueOf.StreamTokenTTLSec <= 0 {
+		log.Sugar().Info("STREAM_TOKEN_TTL_SEC must be greater than 0, defaulting to 1800 seconds")
+		ValueOf.StreamTokenTTLSec = 1800
+	}
+	if ValueOf.MongoURI == "" || ValueOf.MongoDB == "" {
+		log.Sugar().Info("MongoDB stream routes are disabled; set MONGO_URI and MONGO_DB to enable DB-backed stream links")
+	}
+	if ValueOf.StreamSigningSecret == "" {
+		log.Sugar().Info("Signed token routes are disabled; set STREAM_SIGNING_SECRET to enable DB-backed signed links")
+	}
+	if ValueOf.LinkSignAPIKey == "" {
+		log.Sugar().Info("Link sign endpoint is disabled; set LINK_SIGN_API_KEY to enable protected token issuing")
 	}
 }
 

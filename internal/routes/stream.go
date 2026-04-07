@@ -1,14 +1,21 @@
 package routes
 
 import (
+	"EverythingSuckz/fsb/config"
+	"EverythingSuckz/fsb/internal/auth"
 	"EverythingSuckz/fsb/internal/bot"
+	"EverythingSuckz/fsb/internal/movies"
 	"EverythingSuckz/fsb/internal/stream"
 	"EverythingSuckz/fsb/internal/types"
 	"EverythingSuckz/fsb/internal/utils"
+	"crypto/subtle"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/gotd/td/tg"
 	range_parser "github.com/quantumsheep/range-parser"
@@ -22,12 +29,13 @@ var log *zap.Logger
 func (e *allRoutes) LoadHome(r *Route) {
 	log = e.log.Named("Stream")
 	defer log.Info("Loaded stream route")
-	r.Engine.GET("/stream/:messageID", getStreamRoute)
+	r.Engine.GET("/stream/:messageID", getLegacyStreamRoute)
+	r.Engine.GET("/stream/db/:id", getDBStreamRoute)
+	r.Engine.GET("/sign/db/:id", getSignedDBLinkRoute)
 }
 
-func getStreamRoute(ctx *gin.Context) {
+func getLegacyStreamRoute(ctx *gin.Context) {
 	w := ctx.Writer
-	r := ctx.Request
 
 	messageIDParm := ctx.Param("messageID")
 	messageID, err := strconv.Atoi(messageIDParm)
@@ -62,6 +70,112 @@ func getStreamRoute(ctx *gin.Context) {
 		http.Error(w, "invalid hash", http.StatusBadRequest)
 		return
 	}
+
+	serveResolvedFile(ctx, worker, file, ctx.Query("d") == "true")
+}
+
+func getSignedDBLinkRoute(ctx *gin.Context) {
+	if !movies.Enabled() {
+		http.Error(ctx.Writer, "mongo repository is disabled", http.StatusServiceUnavailable)
+		return
+	}
+	if config.ValueOf.LinkSignAPIKey == "" || config.ValueOf.StreamSigningSecret == "" {
+		http.Error(ctx.Writer, "sign endpoint is disabled", http.StatusServiceUnavailable)
+		return
+	}
+	if !isSignRequestAuthorized(ctx) {
+		http.Error(ctx.Writer, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	id := ctx.Param("id")
+	if _, err := movies.FindByID(ctx, id); err != nil {
+		if errors.Is(err, movies.ErrNotFound) {
+			http.Error(ctx.Writer, "movie not found", http.StatusNotFound)
+			return
+		}
+		http.Error(ctx.Writer, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	download := parseDownloadFlag(ctx.Query("d"))
+	ttl := time.Duration(config.ValueOf.StreamTokenTTLSec) * time.Second
+	now := time.Now()
+	token, err := auth.SignStreamToken(id, download, ttl, config.ValueOf.StreamSigningSecret, now)
+	if err != nil {
+		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	streamURL := auth.BuildStreamDBURL(config.ValueOf.Host, id, token)
+	ctx.JSON(http.StatusOK, gin.H{
+		"id":         id,
+		"url":        streamURL,
+		"download":   download,
+		"expiresAt":  now.Add(ttl).Unix(),
+		"expiresIn":  int(ttl.Seconds()),
+		"token":      token,
+		"route":      fmt.Sprintf("/stream/db/%s", id),
+		"tokenParam": "token",
+	})
+}
+
+func getDBStreamRoute(ctx *gin.Context) {
+	if !movies.Enabled() {
+		http.Error(ctx.Writer, "mongo repository is disabled", http.StatusServiceUnavailable)
+		return
+	}
+	if config.ValueOf.StreamSigningSecret == "" {
+		http.Error(ctx.Writer, "stream signing is disabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	id := ctx.Param("id")
+	token := ctx.Query("token")
+	if token == "" {
+		http.Error(ctx.Writer, "missing token param", http.StatusBadRequest)
+		return
+	}
+	claims, err := auth.VerifyStreamToken(token, id, config.ValueOf.StreamSigningSecret, time.Now())
+	if err != nil {
+		switch {
+		case errors.Is(err, auth.ErrTokenExpired):
+			http.Error(ctx.Writer, "token expired", http.StatusUnauthorized)
+		case errors.Is(err, auth.ErrIDMismatch), errors.Is(err, auth.ErrInvalidSignature):
+			http.Error(ctx.Writer, "invalid token", http.StatusForbidden)
+		default:
+			http.Error(ctx.Writer, "invalid token", http.StatusBadRequest)
+		}
+		return
+	}
+
+	movie, err := movies.FindByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, movies.ErrNotFound) {
+			http.Error(ctx.Writer, "movie not found", http.StatusNotFound)
+			return
+		}
+		http.Error(ctx.Writer, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	worker := bot.GetNextWorker()
+	file, err := utils.TimeFuncWithResult(log, "FileFromChannelMessage", func() (*types.File, error) {
+		return utils.FileFromChannelMessage(ctx, worker.Client, movie.SourceChannel, movie.MessageID)
+	})
+	if err != nil {
+		http.Error(ctx.Writer, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if file.FileName == "" && movie.FileName != "" {
+		file.FileName = movie.FileName
+	}
+
+	serveResolvedFile(ctx, worker, file, claims.Download)
+}
+
+func serveResolvedFile(ctx *gin.Context, worker *bot.Worker, file *types.File, download bool) {
+	w := ctx.Writer
+	r := ctx.Request
 
 	// for photo messages
 	if file.FileSize == 0 {
@@ -120,7 +234,7 @@ func getStreamRoute(ctx *gin.Context) {
 
 	disposition := "inline"
 
-	if ctx.Query("d") == "true" {
+	if download {
 		disposition = "attachment"
 	}
 
@@ -130,6 +244,7 @@ func getStreamRoute(ctx *gin.Context) {
 		pipe, err := stream.NewStreamPipe(ctx, worker.Client, file.Location, start, end, log)
 		if err != nil {
 			log.Error("Failed to create stream pipe", zap.Error(err))
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		defer pipe.Close()
@@ -139,4 +254,35 @@ func getStreamRoute(ctx *gin.Context) {
 			}
 		}
 	}
+}
+
+func parseDownloadFlag(v string) bool {
+	v = strings.TrimSpace(strings.ToLower(v))
+	return v == "1" || v == "true" || v == "yes"
+}
+
+func isSignRequestAuthorized(ctx *gin.Context) bool {
+	expected := config.ValueOf.LinkSignAPIKey
+	if expected == "" {
+		return false
+	}
+	apiKey := ctx.GetHeader("X-API-Key")
+	if secureCompare(apiKey, expected) {
+		return true
+	}
+	authorization := strings.TrimSpace(ctx.GetHeader("Authorization"))
+	if strings.HasPrefix(strings.ToLower(authorization), "bearer ") {
+		bearerToken := strings.TrimSpace(authorization[len("Bearer "):])
+		if secureCompare(bearerToken, expected) {
+			return true
+		}
+	}
+	return false
+}
+
+func secureCompare(a, b string) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }

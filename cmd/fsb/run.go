@@ -4,9 +4,11 @@ import (
 	"EverythingSuckz/fsb/config"
 	"EverythingSuckz/fsb/internal/bot"
 	"EverythingSuckz/fsb/internal/cache"
+	"EverythingSuckz/fsb/internal/movies"
 	"EverythingSuckz/fsb/internal/routes"
 	"EverythingSuckz/fsb/internal/types"
 	"EverythingSuckz/fsb/internal/utils"
+	"context"
 	"fmt"
 	"net/http"
 	"time"
@@ -34,6 +36,14 @@ func runApp(cmd *cobra.Command, args []string) {
 	utils.InitLogger(config.ValueOf.Dev)
 	log := utils.Logger
 	mainLogger := log.Named("Main")
+	if err := movies.Init(log, config.ValueOf.MongoURI, config.ValueOf.MongoDB, config.ValueOf.MongoCollection); err != nil {
+		mainLogger.Sugar().Fatalf("Failed to initialize Mongo repository: %v", err)
+	}
+	defer func() {
+		if err := movies.Close(context.Background()); err != nil {
+			mainLogger.Warn("Failed to close Mongo repository", zap.Error(err))
+		}
+	}()
 	mainLogger.Info("Starting server")
 	router := getRouter(log)
 

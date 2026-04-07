@@ -1,6 +1,6 @@
 {
     "name": "TG FileStreamBot",
-    "description": "Stream Telegram files to web",
+    "description": "Stream Telegram files to web with Mongo-backed signed links",
     "keywords": [
         "telegram",
         "web",
@@ -8,10 +8,13 @@
         "golang",
         "file-streaming",
         "file-to-link",
-        "TG-FileStreamBot"
+        "TG-FileStreamBot",
+        "mongodb",
+        "heroku"
     ],
     "repository": "https://github.com/EverythingSuckz/TG-FileStreamBot",
     "logo": "https://telegra.ph/file/a8bb3f6b334ad1200ddb4.png",
+    "success_url": "/",
     "env": {
         "API_ID": {
             "description": "Get this value from https://my.telegram.org"
@@ -23,10 +26,36 @@
             "description": "Get this value from @BotFather"
         },
         "LOG_CHANNEL": {
-            "description": "channel ID for the log channel where the bot will forward media messages and store these files"
+            "description": "Optional for legacy forwarding mode. Set a channel ID if you want the old /stream/:messageID?hash flow. Use 0 for Mongo-only mode.",
+            "value": "0",
+            "required": false
+        },
+        "MONGO_URI": {
+            "description": "MongoDB connection string for your movies collection"
+        },
+        "MONGO_DB": {
+            "description": "MongoDB database name (for example: moviesDB)"
+        },
+        "MONGO_COLLECTION": {
+            "description": "MongoDB collection name that stores file metadata",
+            "value": "movies",
+            "required": false
+        },
+        "STREAM_SIGNING_SECRET": {
+            "description": "Secret key used to sign stream tokens (keep private)",
+            "generator": "secret"
+        },
+        "STREAM_TOKEN_TTL_SEC": {
+            "description": "Signed URL validity in seconds",
+            "value": "1800",
+            "required": false
+        },
+        "LINK_SIGN_API_KEY": {
+            "description": "API key required by /sign/db/:id endpoint",
+            "generator": "secret"
         },
         "HOST": {
-            "description": "A Fully Qualified Domain Name or Heroku App URL. (eg. https://example.herokuapp.com). Update it After Deploying the Bot",
+            "description": "Your public app URL. Example: https://your-app-name.herokuapp.com. Set this after app is created.",
             "required": false
         },
         "HASH_LENGTH": {
@@ -43,9 +72,11 @@
             "required": false
         }
     },
-    "buildpacks": [{
-        "url": "heroku/go"
-      }],
+    "buildpacks": [
+        {
+            "url": "heroku/go"
+        }
+    ],
     "formation": {
         "web": {
             "quantity": 1,

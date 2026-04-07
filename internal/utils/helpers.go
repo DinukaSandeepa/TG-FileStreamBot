@@ -44,8 +44,12 @@ func IsClientDisconnectError(err error) bool {
 // TODO: move these to a separate package if they grow too large
 
 func GetTGMessage(ctx context.Context, client *gotgproto.Client, messageID int) (*tg.Message, error) {
+	return GetTGMessageFromChannel(ctx, client, config.ValueOf.LogChannelID, messageID)
+}
+
+func GetTGMessageFromChannel(ctx context.Context, client *gotgproto.Client, channelID int64, messageID int) (*tg.Message, error) {
 	inputMessageID := tg.InputMessageClass(&tg.InputMessageID{ID: messageID})
-	channel, err := GetLogChannelPeer(ctx, client.API(), client.PeerStorage)
+	channel, err := GetChannelPeer(ctx, client.API(), client.PeerStorage, channelID)
 	if err != nil {
 		return nil, err
 	}
@@ -115,16 +119,21 @@ func FileFromMedia(media tg.MessageMediaClass) (*types.File, error) {
 }
 
 func FileFromMessage(ctx context.Context, client *gotgproto.Client, messageID int) (*types.File, error) {
-	key := fmt.Sprintf("file:%d:%d", messageID, client.Self.ID)
+	return FileFromChannelMessage(ctx, client, config.ValueOf.LogChannelID, messageID)
+}
+
+func FileFromChannelMessage(ctx context.Context, client *gotgproto.Client, channelID int64, messageID int) (*types.File, error) {
+	normalizedChannelID := normalizeChannelID(channelID)
+	key := fmt.Sprintf("file:%d:%d:%d", normalizedChannelID, messageID, client.Self.ID)
 	log := Logger.Named("GetMessageMedia")
 	var cachedMedia types.File
 	err := cache.GetCache().Get(key, &cachedMedia)
 	if err == nil {
-		log.Debug("Using cached media message properties", zap.Int("messageID", messageID), zap.Int64("clientID", client.Self.ID))
+		log.Debug("Using cached media message properties", zap.Int("messageID", messageID), zap.Int64("channelID", normalizedChannelID), zap.Int64("clientID", client.Self.ID))
 		return &cachedMedia, nil
 	}
-	log.Debug("Fetching file properties from message ID", zap.Int("messageID", messageID), zap.Int64("clientID", client.Self.ID))
-	message, err := GetTGMessage(ctx, client, messageID)
+	log.Debug("Fetching file properties from message ID", zap.Int("messageID", messageID), zap.Int64("channelID", normalizedChannelID), zap.Int64("clientID", client.Self.ID))
+	message, err := GetTGMessageFromChannel(ctx, client, normalizedChannelID, messageID)
 	if err != nil {
 		return nil, err
 	}
@@ -144,36 +153,77 @@ func FileFromMessage(ctx context.Context, client *gotgproto.Client, messageID in
 }
 
 func GetLogChannelPeer(ctx context.Context, api *tg.Client, peerStorage *storage.PeerStorage) (*tg.InputChannel, error) {
-	cachedInputPeer := peerStorage.GetInputPeerById(config.ValueOf.LogChannelID)
+	return GetChannelPeer(ctx, api, peerStorage, config.ValueOf.LogChannelID)
+}
 
-	switch peer := cachedInputPeer.(type) {
-	case *tg.InputPeerEmpty:
-		break
-	case *tg.InputPeerChannel:
-		return &tg.InputChannel{
-			ChannelID:  peer.ChannelID,
-			AccessHash: peer.AccessHash,
-		}, nil
-	default:
-		return nil, errors.New("unexpected type of input peer")
+func GetChannelPeer(ctx context.Context, api *tg.Client, peerStorage *storage.PeerStorage, channelID int64) (*tg.InputChannel, error) {
+	normalized := normalizeChannelID(channelID)
+	lookupIDs := []int64{normalized}
+	if channelID != normalized && channelID != 0 {
+		lookupIDs = append(lookupIDs, channelID)
 	}
-	inputChannel := &tg.InputChannel{
-		ChannelID: config.ValueOf.LogChannelID,
+
+	for _, lookupID := range lookupIDs {
+		if lookupID == 0 {
+			continue
+		}
+		cachedInputPeer := peerStorage.GetInputPeerById(lookupID)
+
+		switch peer := cachedInputPeer.(type) {
+		case *tg.InputPeerEmpty:
+			continue
+		case *tg.InputPeerChannel:
+			return &tg.InputChannel{
+				ChannelID:  peer.ChannelID,
+				AccessHash: peer.AccessHash,
+			}, nil
+		default:
+			return nil, errors.New("unexpected type of input peer")
+		}
 	}
-	channels, err := api.ChannelsGetChannels(ctx, []tg.InputChannelClass{inputChannel})
-	if err != nil {
-		return nil, err
+
+	var lastErr error
+	for _, lookupID := range lookupIDs {
+		if lookupID == 0 {
+			continue
+		}
+		inputChannel := &tg.InputChannel{ChannelID: lookupID}
+		channels, err := api.ChannelsGetChannels(ctx, []tg.InputChannelClass{inputChannel})
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if len(channels.GetChats()) == 0 {
+			lastErr = errors.New("no channels found")
+			continue
+		}
+		channel, ok := channels.GetChats()[0].(*tg.Channel)
+		if !ok {
+			lastErr = errors.New("type assertion to *tg.Channel failed")
+			continue
+		}
+		// Bruh, I literally have to call library internal functions at this point
+		peerStorage.AddPeer(channel.GetID(), channel.AccessHash, storage.TypeChannel, "")
+		return channel.AsInput(), nil
 	}
-	if len(channels.GetChats()) == 0 {
-		return nil, errors.New("no channels found")
+
+	if lastErr != nil {
+		return nil, fmt.Errorf("failed to resolve channel %d (normalized %d): %w", channelID, normalized, lastErr)
 	}
-	channel, ok := channels.GetChats()[0].(*tg.Channel)
-	if !ok {
-		return nil, errors.New("type assertion to *tg.Channel failed")
+	return nil, errors.New("no channels found")
+}
+
+func normalizeChannelID(channelID int64) int64 {
+	if channelID == 0 {
+		return 0
 	}
-	// Bruh, I literally have to call library internal functions at this point
-	peerStorage.AddPeer(channel.GetID(), channel.AccessHash, storage.TypeChannel, "")
-	return channel.AsInput(), nil
+	if channelID < 0 {
+		channelID = -channelID
+	}
+	if channelID > 1000000000000 {
+		return channelID - 1000000000000
+	}
+	return channelID
 }
 
 func ForwardMessages(ctx *ext.Context, fromChatId, toChatId int64, messageID int) (*tg.Updates, error) {
@@ -181,7 +231,7 @@ func ForwardMessages(ctx *ext.Context, fromChatId, toChatId int64, messageID int
 	if fromPeer.Zero() {
 		return nil, fmt.Errorf("fromChatId: %d is not a valid peer", fromChatId)
 	}
-	toPeer, err := GetLogChannelPeer(ctx, ctx.Raw, ctx.PeerStorage)
+	toPeer, err := GetChannelPeer(ctx, ctx.Raw, ctx.PeerStorage, toChatId)
 	if err != nil {
 		return nil, err
 	}
