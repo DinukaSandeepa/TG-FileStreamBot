@@ -30,6 +30,7 @@
 - A Telegram bot token (`BOT_TOKEN`)
 - Telegram API credentials (`API_ID`, `API_HASH`)
 - Optional: Telegram log channel ID (`LOG_CHANNEL`) for legacy forwarding mode
+- Optional: Telegram subtitle channel ID (`SUBTITLE_CHANNEL_ID`) as fallback for subtitle docs without `sourceChannel`
 
 ### 1) Prepare environment
 
@@ -49,6 +50,7 @@ For Mongo-backed signed links, also set:
 - `MONGO_URI`
 - `MONGO_DB`
 - `MONGO_COLLECTION` (default `movies`)
+- `MONGO_SUBTITLES_COLLECTION` (default `subtitles`)
 - `STREAM_SIGNING_SECRET`
 - `STREAM_TOKEN_TTL_SEC`
 - `LINK_SIGN_API_KEY`
@@ -56,6 +58,8 @@ For Mongo-backed signed links, also set:
 If you only use Mongo signed links, you can keep:
 
 - `LOG_CHANNEL=0`
+
+If your subtitles collection stores `sourceChannel` per document, `SUBTITLE_CHANNEL_ID` can stay `0`.
 
 ### 2) Start the server (Go)
 
@@ -99,9 +103,11 @@ This project now supports streaming files directly from existing MongoDB metadat
 - `MONGO_URI` - MongoDB connection string
 - `MONGO_DB` - Database name
 - `MONGO_COLLECTION` - Collection name (default: `movies`)
+- `MONGO_SUBTITLES_COLLECTION` - Subtitles collection name (default: `subtitles`)
 - `STREAM_SIGNING_SECRET` - Secret used to sign stream tokens
 - `STREAM_TOKEN_TTL_SEC` - Signed URL validity in seconds (default: `1800`)
 - `LINK_SIGN_API_KEY` - API key required to request signed stream URLs
+- `SUBTITLE_CHANNEL_ID` - Optional fallback subtitle channel ID when subtitle docs omit `sourceChannel`
 
 ### Expected MongoDB document shape
 
@@ -125,6 +131,19 @@ Each file document in the target collection should have at least:
   - `GET /stream/db/:id?token=<signed-token>`
 
 The stream URL expires automatically based on `STREAM_TOKEN_TTL_SEC`.
+
+### Subtitle direct links (permanent)
+
+Subtitle links are permanent and do not need token signing.
+
+1. Direct subtitle by subtitle document ID:
+  - `GET /subtitle/db/:id`
+
+2. Convert SRT to VTT on the fly (direct link):
+  - `GET /subtitle/db/:id?format=vtt`
+
+3. Get ready-to-use subtitle links JSON:
+  - `GET /subtitle/db/:id/links`
 
 For complete browser and backend integration examples, see [docs/FRONTEND_STREAMING.md](docs/FRONTEND_STREAMING.md).
 

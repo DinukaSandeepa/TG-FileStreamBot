@@ -31,8 +31,10 @@ These must be set in the deploy form:
 Optional:
 
 - MONGO_COLLECTION (default movies)
+- MONGO_SUBTITLES_COLLECTION (default subtitles)
 - STREAM_TOKEN_TTL_SEC (default 1800)
 - LOG_CHANNEL (default 0 for Mongo-only mode)
+- SUBTITLE_CHANNEL_ID (default 0, fallback only)
 - HOST (recommended to set after app creation)
 
 ## Post-deploy required step
@@ -70,6 +72,14 @@ Expected:
 
 - HTTP 206 Partial Content
 - Content-Range header
+
+4. Subtitle endpoint (permanent link):
+
+curl "https://your-app-name.herokuapp.com/subtitle/db/<subtitle_object_id>"
+
+5. Subtitle VTT conversion endpoint:
+
+curl "https://your-app-name.herokuapp.com/subtitle/db/<subtitle_object_id>?format=vtt"
 
 ## Frontend integration on Heroku
 

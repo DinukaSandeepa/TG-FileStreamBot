@@ -30,6 +30,11 @@
             "value": "0",
             "required": false
         },
+        "SUBTITLE_CHANNEL_ID": {
+            "description": "Optional fallback subtitle channel ID. Used when a subtitles document does not include sourceChannel.",
+            "value": "0",
+            "required": false
+        },
         "MONGO_URI": {
             "description": "MongoDB connection string for your movies collection"
         },
@@ -39,6 +44,11 @@
         "MONGO_COLLECTION": {
             "description": "MongoDB collection name that stores file metadata",
             "value": "movies",
+            "required": false
+        },
+        "MONGO_SUBTITLES_COLLECTION": {
+            "description": "MongoDB collection name that stores subtitle metadata",
+            "value": "subtitles",
             "required": false
         },
         "STREAM_SIGNING_SECRET": {

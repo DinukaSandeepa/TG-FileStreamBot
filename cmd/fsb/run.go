@@ -6,6 +6,7 @@ import (
 	"EverythingSuckz/fsb/internal/cache"
 	"EverythingSuckz/fsb/internal/movies"
 	"EverythingSuckz/fsb/internal/routes"
+	"EverythingSuckz/fsb/internal/subtitles"
 	"EverythingSuckz/fsb/internal/types"
 	"EverythingSuckz/fsb/internal/utils"
 	"context"
@@ -39,9 +40,15 @@ func runApp(cmd *cobra.Command, args []string) {
 	if err := movies.Init(log, config.ValueOf.MongoURI, config.ValueOf.MongoDB, config.ValueOf.MongoCollection); err != nil {
 		mainLogger.Sugar().Fatalf("Failed to initialize Mongo repository: %v", err)
 	}
+	if err := subtitles.Init(log, config.ValueOf.MongoURI, config.ValueOf.MongoDB, config.ValueOf.MongoSubtitlesCollection); err != nil {
+		mainLogger.Sugar().Fatalf("Failed to initialize subtitles repository: %v", err)
+	}
 	defer func() {
 		if err := movies.Close(context.Background()); err != nil {
 			mainLogger.Warn("Failed to close Mongo repository", zap.Error(err))
+		}
+		if err := subtitles.Close(context.Background()); err != nil {
+			mainLogger.Warn("Failed to close subtitles repository", zap.Error(err))
 		}
 	}()
 	mainLogger.Info("Starting server")

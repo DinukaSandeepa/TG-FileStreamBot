@@ -15,6 +15,12 @@ The streaming flow has 2 endpoints:
    - GET /stream/db/:id?token=...
    - Token is validated and expires based on STREAM_TOKEN_TTL_SEC
 
+Subtitle flow has permanent endpoints (no token required):
+
+- GET /subtitle/db/:id
+- GET /subtitle/db/:id?format=vtt (SRT to VTT conversion)
+- GET /subtitle/db/:id/links
+
 ## Required backend environment
 
 Your stream service must have these configured:
@@ -22,9 +28,11 @@ Your stream service must have these configured:
 - MONGO_URI
 - MONGO_DB
 - MONGO_COLLECTION (default: movies)
+- MONGO_SUBTITLES_COLLECTION (default: subtitles)
 - STREAM_SIGNING_SECRET
 - STREAM_TOKEN_TTL_SEC
 - LINK_SIGN_API_KEY
+- SUBTITLE_CHANNEL_ID (optional fallback if subtitle docs do not store sourceChannel)
 
 ## Mongo document requirements
 
@@ -152,6 +160,30 @@ Your backend can request a download-mode signed URL by adding d=true to sign end
 
 Use returned URL as anchor href.
 
+## Subtitle link usage example
+
+For subtitle id `6824a95cbf08f4af6f2f9ca8`:
+
+- Original subtitle: `/subtitle/db/6824a95cbf08f4af6f2f9ca8`
+- VTT converted subtitle: `/subtitle/db/6824a95cbf08f4af6f2f9ca8?format=vtt`
+- Auto links JSON: `/subtitle/db/6824a95cbf08f4af6f2f9ca8/links`
+
+Player usage example:
+
+```html
+<video id="player" controls src="{{SIGNED_STREAM_URL}}"></video>
+<script>
+  const video = document.getElementById("player");
+  const track = document.createElement("track");
+  track.kind = "subtitles";
+  track.label = "Tamil";
+  track.srclang = "ta";
+  track.src = "https://your-fsb-domain/subtitle/db/6824a95cbf08f4af6f2f9ca8?format=vtt";
+  track.default = true;
+  video.appendChild(track);
+</script>
+```
+
 ## Token expiry handling
 
 If token expires while user opens old page:
@@ -182,3 +214,5 @@ Recommended UX:
    - Wrong or missing LINK_SIGN_API_KEY
 4. browser mixed-content block:
    - Frontend uses https but stream URL is http
+5. subtitle format is not convertible to vtt:
+  - Conversion route only supports `.srt` (or already `.vtt`)

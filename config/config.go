@@ -38,27 +38,29 @@ func (au *allowedUsers) Decode(value string) error {
 }
 
 type config struct {
-	ApiID          int32        `envconfig:"API_ID" required:"true"`
-	ApiHash        string       `envconfig:"API_HASH" required:"true"`
-	BotToken       string       `envconfig:"BOT_TOKEN" required:"true"`
-	LogChannelID   int64        `envconfig:"LOG_CHANNEL" default:"0"`
-	Dev            bool         `envconfig:"DEV" default:"false"`
-	Port           int          `envconfig:"PORT" default:"8080"`
-	Host           string       `envconfig:"HOST" default:""`
-	HashLength     int          `envconfig:"HASH_LENGTH" default:"6"`
-	UseSessionFile bool         `envconfig:"USE_SESSION_FILE" default:"true"`
-	UserSession    string       `envconfig:"USER_SESSION"`
-	UsePublicIP    bool         `envconfig:"USE_PUBLIC_IP" default:"false"`
-	AllowedUsers   allowedUsers `envconfig:"ALLOWED_USERS"`
-	MultiTokens    []string
+	ApiID             int32        `envconfig:"API_ID" required:"true"`
+	ApiHash           string       `envconfig:"API_HASH" required:"true"`
+	BotToken          string       `envconfig:"BOT_TOKEN" required:"true"`
+	LogChannelID      int64        `envconfig:"LOG_CHANNEL" default:"0"`
+	SubtitleChannelID int64        `envconfig:"SUBTITLE_CHANNEL_ID" default:"0"`
+	Dev               bool         `envconfig:"DEV" default:"false"`
+	Port              int          `envconfig:"PORT" default:"8080"`
+	Host              string       `envconfig:"HOST" default:""`
+	HashLength        int          `envconfig:"HASH_LENGTH" default:"6"`
+	UseSessionFile    bool         `envconfig:"USE_SESSION_FILE" default:"true"`
+	UserSession       string       `envconfig:"USER_SESSION"`
+	UsePublicIP       bool         `envconfig:"USE_PUBLIC_IP" default:"false"`
+	AllowedUsers      allowedUsers `envconfig:"ALLOWED_USERS"`
+	MultiTokens       []string
 
 	// Mongo and signed-link config
-	MongoURI            string `envconfig:"MONGO_URI" default:""`
-	MongoDB             string `envconfig:"MONGO_DB" default:""`
-	MongoCollection     string `envconfig:"MONGO_COLLECTION" default:"movies"`
-	StreamSigningSecret string `envconfig:"STREAM_SIGNING_SECRET" default:""`
-	StreamTokenTTLSec   int    `envconfig:"STREAM_TOKEN_TTL_SEC" default:"1800"`
-	LinkSignAPIKey      string `envconfig:"LINK_SIGN_API_KEY" default:""`
+	MongoURI                 string `envconfig:"MONGO_URI" default:""`
+	MongoDB                  string `envconfig:"MONGO_DB" default:""`
+	MongoCollection          string `envconfig:"MONGO_COLLECTION" default:"movies"`
+	MongoSubtitlesCollection string `envconfig:"MONGO_SUBTITLES_COLLECTION" default:"subtitles"`
+	StreamSigningSecret      string `envconfig:"STREAM_SIGNING_SECRET" default:""`
+	StreamTokenTTLSec        int    `envconfig:"STREAM_TOKEN_TTL_SEC" default:"1800"`
+	LinkSignAPIKey           string `envconfig:"LINK_SIGN_API_KEY" default:""`
 
 	// stream specific config
 	StreamConcurrency int `envconfig:"STREAM_CONCURRENCY" default:"4"`
@@ -90,6 +92,7 @@ func SetFlagsFromConfig(cmd *cobra.Command) {
 	cmd.Flags().String("api-hash", ValueOf.ApiHash, "Telegram API Hash")
 	cmd.Flags().String("bot-token", ValueOf.BotToken, "Telegram Bot Token")
 	cmd.Flags().Int64("log-channel", ValueOf.LogChannelID, "Telegram Log Channel ID")
+	cmd.Flags().Int64("subtitle-channel", ValueOf.SubtitleChannelID, "Telegram Subtitle Channel ID")
 	cmd.Flags().Bool("dev", ValueOf.Dev, "Enable development mode")
 	cmd.Flags().IntP("port", "p", ValueOf.Port, "Server port")
 	cmd.Flags().String("host", ValueOf.Host, "Server host that will be included in links")
@@ -101,6 +104,7 @@ func SetFlagsFromConfig(cmd *cobra.Command) {
 	cmd.Flags().String("mongo-uri", ValueOf.MongoURI, "MongoDB connection string")
 	cmd.Flags().String("mongo-db", ValueOf.MongoDB, "MongoDB database name")
 	cmd.Flags().String("mongo-collection", ValueOf.MongoCollection, "MongoDB collection name for file metadata")
+	cmd.Flags().String("mongo-subtitles-collection", ValueOf.MongoSubtitlesCollection, "MongoDB collection name for subtitles")
 	cmd.Flags().String("stream-signing-secret", ValueOf.StreamSigningSecret, "HMAC secret used to sign DB stream tokens")
 	cmd.Flags().Int("stream-token-ttl-sec", ValueOf.StreamTokenTTLSec, "Signed stream token TTL in seconds")
 	cmd.Flags().String("link-sign-api-key", ValueOf.LinkSignAPIKey, "API key required for link signing endpoint")
@@ -126,6 +130,10 @@ func (c *config) loadConfigFromArgs(log *zap.Logger, cmd *cobra.Command) {
 	logChannelID, _ := cmd.Flags().GetString("log-channel")
 	if logChannelID != "" {
 		os.Setenv("LOG_CHANNEL", logChannelID)
+	}
+	subtitleChannelID, _ := cmd.Flags().GetInt64("subtitle-channel")
+	if subtitleChannelID != 0 {
+		os.Setenv("SUBTITLE_CHANNEL_ID", strconv.FormatInt(subtitleChannelID, 10))
 	}
 	dev, _ := cmd.Flags().GetBool("dev")
 	if dev {
@@ -172,6 +180,10 @@ func (c *config) loadConfigFromArgs(log *zap.Logger, cmd *cobra.Command) {
 	if mongoCollection != "" {
 		os.Setenv("MONGO_COLLECTION", mongoCollection)
 	}
+	mongoSubtitlesCollection, _ := cmd.Flags().GetString("mongo-subtitles-collection")
+	if mongoSubtitlesCollection != "" {
+		os.Setenv("MONGO_SUBTITLES_COLLECTION", mongoSubtitlesCollection)
+	}
 	streamSigningSecret, _ := cmd.Flags().GetString("stream-signing-secret")
 	if streamSigningSecret != "" {
 		os.Setenv("STREAM_SIGNING_SECRET", streamSigningSecret)
@@ -207,6 +219,9 @@ func (c *config) setupEnvVars(log *zap.Logger, cmd *cobra.Command) {
 	c.loadConfigFromArgs(log, cmd)
 	if strings.TrimSpace(os.Getenv("LOG_CHANNEL")) == "" {
 		os.Setenv("LOG_CHANNEL", "0")
+	}
+	if strings.TrimSpace(os.Getenv("SUBTITLE_CHANNEL_ID")) == "" {
+		os.Setenv("SUBTITLE_CHANNEL_ID", "0")
 	}
 	err := envconfig.Process("", c)
 	if err != nil {
@@ -247,6 +262,11 @@ func Load(log *zap.Logger, cmd *cobra.Command) {
 		log.Sugar().Info("LOG_CHANNEL is not set; legacy forwarding/hash routes are disabled unless you set LOG_CHANNEL")
 	} else {
 		ValueOf.LogChannelID = int64(stripInt(log, int(ValueOf.LogChannelID)))
+	}
+	if ValueOf.SubtitleChannelID == 0 {
+		log.Sugar().Info("SUBTITLE_CHANNEL_ID is not set; subtitle docs must provide sourceChannel for subtitle routes to work")
+	} else {
+		ValueOf.SubtitleChannelID = int64(stripInt(log, int(ValueOf.SubtitleChannelID)))
 	}
 	if ValueOf.HashLength == 0 {
 		log.Sugar().Info("HASH_LENGTH can't be 0, defaulting to 6")
