@@ -31,6 +31,29 @@ func calculateBlockSize(start, end int64) int64 {
 	}
 }
 
+// calculateInitialBufferTarget computes the startup prebuffer amount.
+// It is capped by both response size and in-memory queue capacity to avoid deadlocks.
+func calculateInitialBufferTarget(totalBytes, blockSize int64, bufferSlots, requestedMB int) int64 {
+	if totalBytes <= 0 || blockSize <= 0 || bufferSlots <= 0 || requestedMB <= 0 {
+		return 0
+	}
+
+	requestedBytes := int64(requestedMB) * 1024 * 1024
+	maxQueueBytes := int64(bufferSlots) * blockSize
+
+	target := min(requestedBytes, totalBytes, maxQueueBytes)
+	if target <= 0 {
+		return 0
+	}
+
+	// Ensure at least one block is staged when buffering is enabled.
+	if target < blockSize {
+		target = min(blockSize, totalBytes, maxQueueBytes)
+	}
+
+	return target
+}
+
 // StreamPipe reads data from Telegram with concurrent prefetching. implements `io.ReadCloser`.
 // credits: [teldrive](https://github.com/tgdrive/teldrive/blob/1071a6e8b5a4076cacc5a0989ef245fae517d837/internal/reader/tg_reader.go)
 type StreamPipe struct {
@@ -49,7 +72,9 @@ type StreamPipe struct {
 	totalBytes int64
 
 	// prefetch pipeline
-	blockQueue chan []byte
+	blockQueue  chan []byte
+	bufferReady chan struct{}
+	readyBytes  int64
 
 	// current read state
 	currentBlock []byte
@@ -58,6 +83,7 @@ type StreamPipe struct {
 
 	// lifecycle
 	closeOnce sync.Once
+	readyOnce sync.Once
 }
 
 // class function which creates a StreamPipe with default configuration.
@@ -77,18 +103,30 @@ func NewStreamPipe(
 
 	totalBytes := end - start + 1
 	blockSize := calculateBlockSize(start, end)
+	readyBytes := calculateInitialBufferTarget(
+		totalBytes,
+		blockSize,
+		config.ValueOf.StreamBufferCount,
+		config.ValueOf.StreamInitialBufferMB,
+	)
 
 	p := &StreamPipe{
-		ctx:        ctx,
-		cancel:     cancel,
-		log:        log.Named("StreamPipe"),
-		client:     client,
-		location:   location,
-		start:      start,
-		end:        end,
-		blockSize:  blockSize,
-		totalBytes: totalBytes,
-		blockQueue: make(chan []byte, config.ValueOf.StreamBufferCount),
+		ctx:         ctx,
+		cancel:      cancel,
+		log:         log.Named("StreamPipe"),
+		client:      client,
+		location:    location,
+		start:       start,
+		end:         end,
+		blockSize:   blockSize,
+		totalBytes:  totalBytes,
+		blockQueue:  make(chan []byte, config.ValueOf.StreamBufferCount),
+		bufferReady: make(chan struct{}),
+		readyBytes:  readyBytes,
+	}
+
+	if p.readyBytes == 0 {
+		p.markReady()
 	}
 
 	// start prefetching in background
@@ -99,6 +137,14 @@ func NewStreamPipe(
 
 // Read implements io.Reader
 func (p *StreamPipe) Read(buf []byte) (n int, err error) {
+	if p.bytesRead == 0 {
+		select {
+		case <-p.bufferReady:
+		case <-p.ctx.Done():
+			return 0, p.ctx.Err()
+		}
+	}
+
 	if p.bytesRead >= p.totalBytes {
 		p.log.Sugar().Debug("EOF (bytesread == contentLength)")
 		return 0, io.EOF
@@ -134,13 +180,23 @@ func (p *StreamPipe) Read(buf []byte) (n int, err error) {
 func (p *StreamPipe) Close() error {
 	p.closeOnce.Do(func() {
 		p.cancel()
+		p.markReady()
 	})
 	return nil
 }
 
+func (p *StreamPipe) markReady() {
+	p.readyOnce.Do(func() {
+		close(p.bufferReady)
+	})
+}
+
 // prefetch runs in a goroutine, fetching blocks concurrently and sending to blockQueue.
 func (p *StreamPipe) prefetch() {
+	defer p.markReady()
 	defer close(p.blockQueue)
+
+	var queuedBytes int64
 
 	// calc block boundaries
 	alignedStart := p.start - (p.start % p.blockSize)
@@ -231,6 +287,10 @@ func (p *StreamPipe) prefetch() {
 			}
 			select {
 			case p.blockQueue <- block:
+				queuedBytes += int64(len(block))
+				if queuedBytes >= p.readyBytes {
+					p.markReady()
+				}
 			case <-p.ctx.Done():
 				return
 			}

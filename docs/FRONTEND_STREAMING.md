@@ -33,6 +33,11 @@ Your stream service must have these configured:
 - STREAM_TOKEN_TTL_SEC
 - LINK_SIGN_API_KEY
 - SUBTITLE_CHANNEL_ID (optional fallback if subtitle docs do not store sourceChannel)
+- STREAM_CONCURRENCY (optional, default 4)
+- STREAM_BUFFER_COUNT (optional, default 8)
+- STREAM_INITIAL_BUFFER_MB (optional, default 4)
+- STREAM_TIMEOUT_SEC (optional, default 30)
+- STREAM_MAX_RETRIES (optional, default 3)
 
 ## Mongo document requirements
 
@@ -100,51 +105,155 @@ app.get("/api/stream-url/:id", async (req, res) => {
 });
 ```
 
+## Playback buffering for laggy VPN/mobile networks
+
+FSB now supports startup prebuffering on the stream route.
+This behaves closer to platforms like YouTube: the server fills a small buffer first, then starts sending bytes.
+
+Recommended tuning (start here, then adjust):
+
+- STREAM_CONCURRENCY=6
+- STREAM_BUFFER_COUNT=16
+- STREAM_INITIAL_BUFFER_MB=8
+- STREAM_TIMEOUT_SEC=45
+- STREAM_MAX_RETRIES=5
+
+Notes:
+
+- Set STREAM_INITIAL_BUFFER_MB=0 to disable startup prebuffer.
+- Higher STREAM_BUFFER_COUNT and STREAM_INITIAL_BUFFER_MB improve smoothness but increase RAM use per active stream.
+- Keep your frontend player preload as `auto` to allow browser-side buffering.
+
 ## Frontend player example (React)
 
 ```jsx
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+const RETRY_COOLDOWN_MS = 15000;
+const MIN_BUFFER_AHEAD_SEC = 6;
 
 export default function VideoPlayer({ mongoId }) {
+  const videoRef = useRef(null);
+  const refreshingRef = useRef(false);
+  const lastRefreshAtRef = useRef(0);
+
   const [streamUrl, setStreamUrl] = useState("");
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    let cancelled = false;
+  const getBufferAhead = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || !video.buffered || video.buffered.length === 0) return 0;
 
-    async function loadUrl() {
-      setError("");
-      try {
-        const r = await fetch(`/api/stream-url/${mongoId}`);
-        const data = await r.json();
-        if (!r.ok || !data.ok) {
-          throw new Error(data.error || "Failed to get stream URL");
-        }
-        if (!cancelled) {
-          setStreamUrl(data.streamUrl);
-        }
-      } catch (e) {
-        if (!cancelled) {
-          setError(e.message);
-        }
+    const t = video.currentTime;
+    for (let i = 0; i < video.buffered.length; i += 1) {
+      const start = video.buffered.start(i);
+      const end = video.buffered.end(i);
+      if (t >= start && t <= end) {
+        return Math.max(0, end - t);
       }
     }
 
-    loadUrl();
-    return () => {
-      cancelled = true;
-    };
+    return 0;
+  }, []);
+
+  const fetchSignedUrl = useCallback(async () => {
+    const r = await fetch(`/api/stream-url/${mongoId}`);
+    const data = await r.json();
+    if (!r.ok || !data.ok) {
+      throw new Error(data.error || "Failed to get stream URL");
+    }
+    return data.streamUrl;
   }, [mongoId]);
 
+  const refreshStreamUrl = useCallback(
+    async ({ preserveTime } = { preserveTime: true }) => {
+      if (refreshingRef.current) return;
+      refreshingRef.current = true;
+
+      try {
+        setError("");
+
+        const video = videoRef.current;
+        const resumeAt = preserveTime && video ? video.currentTime : 0;
+        const wasPaused = video ? video.paused : false;
+
+        const nextUrl = await fetchSignedUrl();
+        setStreamUrl(nextUrl);
+        setLoading(false);
+
+        requestAnimationFrame(() => {
+          const node = videoRef.current;
+          if (!node) return;
+
+          if (resumeAt > 0) node.currentTime = resumeAt;
+          if (!wasPaused) {
+            node.play().catch(() => {
+              // Autoplay may be blocked by browser policy.
+            });
+          }
+        });
+      } catch (e) {
+        setError(e.message || "Playback refresh failed");
+        setLoading(false);
+      } finally {
+        refreshingRef.current = false;
+      }
+    },
+    [fetchSignedUrl]
+  );
+
+  useEffect(() => {
+    setStreamUrl("");
+    setLoading(true);
+    setError("");
+    refreshingRef.current = false;
+
+    refreshStreamUrl({ preserveTime: false }).catch(() => {
+      // Error state is handled inside refreshStreamUrl.
+    });
+  }, [mongoId, refreshStreamUrl]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !streamUrl) return;
+
+    const tryRecover = async () => {
+      const now = Date.now();
+      if (now - lastRefreshAtRef.current < RETRY_COOLDOWN_MS) return;
+      if (getBufferAhead() > MIN_BUFFER_AHEAD_SEC) return;
+
+      lastRefreshAtRef.current = now;
+      await refreshStreamUrl({ preserveTime: true });
+    };
+
+    const onStall = () => {
+      tryRecover().catch(() => {
+        // Error state is handled inside refreshStreamUrl.
+      });
+    };
+
+    video.addEventListener("stalled", onStall);
+    video.addEventListener("waiting", onStall);
+    video.addEventListener("error", onStall);
+
+    return () => {
+      video.removeEventListener("stalled", onStall);
+      video.removeEventListener("waiting", onStall);
+      video.removeEventListener("error", onStall);
+    };
+  }, [streamUrl, getBufferAhead, refreshStreamUrl]);
+
   if (error) return <p>Stream error: {error}</p>;
-  if (!streamUrl) return <p>Preparing stream...</p>;
+  if (loading || !streamUrl) return <p>Preparing stream...</p>;
 
   return (
     <video
+      ref={videoRef}
       controls
       autoPlay
       playsInline
-      preload="metadata"
+      preload="auto"
       src={streamUrl}
       style={{ width: "100%", maxWidth: 960 }}
     />
@@ -195,6 +304,7 @@ Recommended UX:
 
 - On media error, call /api/stream-url/:id again once
 - Retry with the new URL
+- Preserve currentTime while refreshing src so user does not lose position
 
 ## Validation checklist
 
@@ -202,6 +312,7 @@ Recommended UX:
 2. GET /sign/db/:id with API key returns url.
 3. Range request to returned URL returns HTTP 206.
 4. Video element can seek (Accept-Ranges present).
+5. On simulated slow network, player recovers by refreshing signed URL and resuming from currentTime.
 
 ## Common issues
 

@@ -55,6 +55,22 @@ For Mongo-backed signed links, also set:
 - `STREAM_TOKEN_TTL_SEC`
 - `LINK_SIGN_API_KEY`
 
+For smoother playback on unstable/VPN networks, tune:
+
+- `STREAM_CONCURRENCY` (default `4`)
+- `STREAM_BUFFER_COUNT` (default `8`)
+- `STREAM_INITIAL_BUFFER_MB` (default `4`, set `0` to disable startup prebuffer)
+- `STREAM_TIMEOUT_SEC` (default `30`)
+- `STREAM_MAX_RETRIES` (default `3`)
+
+Recommended starting values for laggy VPN/mobile networks:
+
+- `STREAM_CONCURRENCY=6`
+- `STREAM_BUFFER_COUNT=16`
+- `STREAM_INITIAL_BUFFER_MB=8`
+- `STREAM_TIMEOUT_SEC=45`
+- `STREAM_MAX_RETRIES=5`
+
 If you only use Mongo signed links, you can keep:
 
 - `LOG_CHANNEL=0`
@@ -85,6 +101,44 @@ curl -sS -H "X-API-Key: <LINK_SIGN_API_KEY>" \
 
 Use returned `url` in your website player.
 
+### 4) How to use startup buffering (YouTube-like behavior)
+
+1. Set stream tuning variables in `fsb.env` (or pass equivalent CLI flags):
+
+```env
+STREAM_CONCURRENCY=6
+STREAM_BUFFER_COUNT=16
+STREAM_INITIAL_BUFFER_MB=8
+STREAM_TIMEOUT_SEC=45
+STREAM_MAX_RETRIES=5
+```
+
+2. Restart FSB so new values are loaded.
+
+3. Keep browser player buffering enabled with `<video preload="auto" ...>`.
+
+4. On `stalled` / `waiting` / `error`, request a fresh signed URL from your backend and retry from current playback position.
+
+5. Optional: disable startup prebuffer if startup delay is too high (`STREAM_INITIAL_BUFFER_MB=0`).
+
+CLI equivalent:
+
+```bash
+go run ./cmd/fsb run \
+  --stream-concurrency=6 \
+  --stream-buffer-count=16 \
+  --stream-initial-buffer-mb=8 \
+  --stream-timeout-sec=45 \
+  --stream-max-retries=5
+```
+
+Quick verification:
+
+- Sign URL: `GET /sign/db/:id`
+- Request with `Range: bytes=0-` and confirm `206 Partial Content`
+- Confirm response includes `Accept-Ranges: bytes`
+- Simulate slow network and verify playback recovers after URL refresh
+
 ### Optional: Run with Docker Compose
 
 ```bash
@@ -108,6 +162,11 @@ This project now supports streaming files directly from existing MongoDB metadat
 - `STREAM_TOKEN_TTL_SEC` - Signed URL validity in seconds (default: `1800`)
 - `LINK_SIGN_API_KEY` - API key required to request signed stream URLs
 - `SUBTITLE_CHANNEL_ID` - Optional fallback subtitle channel ID when subtitle docs omit `sourceChannel`
+- `STREAM_CONCURRENCY` - Parallel Telegram block downloads per stream request (default: `4`)
+- `STREAM_BUFFER_COUNT` - Prefetch queue capacity in blocks (default: `8`)
+- `STREAM_INITIAL_BUFFER_MB` - Initial server-side prebuffer before first byte is sent (default: `4`, `0` disables)
+- `STREAM_TIMEOUT_SEC` - Per-block Telegram fetch timeout (default: `30`)
+- `STREAM_MAX_RETRIES` - Retry attempts per failed block (default: `3`)
 
 ### Expected MongoDB document shape
 
