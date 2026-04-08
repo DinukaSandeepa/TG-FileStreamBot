@@ -63,11 +63,12 @@ type config struct {
 	LinkSignAPIKey           string `envconfig:"LINK_SIGN_API_KEY" default:""`
 
 	// stream specific config
-	StreamConcurrency     int `envconfig:"STREAM_CONCURRENCY" default:"4"`
-	StreamBufferCount     int `envconfig:"STREAM_BUFFER_COUNT" default:"8"`
-	StreamInitialBufferMB int `envconfig:"STREAM_INITIAL_BUFFER_MB" default:"4"`
-	StreamTimeoutSec      int `envconfig:"STREAM_TIMEOUT_SEC" default:"30"`
-	StreamMaxRetries      int `envconfig:"STREAM_MAX_RETRIES" default:"3"`
+	StreamConcurrency      int `envconfig:"STREAM_CONCURRENCY" default:"4"`
+	StreamBufferCount      int `envconfig:"STREAM_BUFFER_COUNT" default:"8"`
+	StreamInitialBufferMB  int `envconfig:"STREAM_INITIAL_BUFFER_MB" default:"4"`
+	StreamOpenEndedChunkMB int `envconfig:"STREAM_OPEN_ENDED_CHUNK_MB" default:"0"`
+	StreamTimeoutSec       int `envconfig:"STREAM_TIMEOUT_SEC" default:"30"`
+	StreamMaxRetries       int `envconfig:"STREAM_MAX_RETRIES" default:"3"`
 }
 
 var botTokenRegex = regexp.MustCompile(`MULTI\_TOKEN\d+=(.*)`)
@@ -112,6 +113,7 @@ func SetFlagsFromConfig(cmd *cobra.Command) {
 	cmd.Flags().Int("stream-concurrency", ValueOf.StreamConcurrency, "Number of parallel block fetches")
 	cmd.Flags().Int("stream-buffer-count", ValueOf.StreamBufferCount, "Number of blocks to prefetch")
 	cmd.Flags().Int("stream-initial-buffer-mb", ValueOf.StreamInitialBufferMB, "How many MB to prebuffer before first bytes are sent")
+	cmd.Flags().Int("stream-open-ended-chunk-mb", ValueOf.StreamOpenEndedChunkMB, "Cap open-ended Range requests to this many MB (0 disables)")
 	cmd.Flags().Int("stream-timeout-sec", ValueOf.StreamTimeoutSec, "Maximum time to wait for a single block (in seconds)")
 	cmd.Flags().Int("stream-max-retries", ValueOf.StreamMaxRetries, "Number of retry attempts for failed fetches")
 }
@@ -210,6 +212,10 @@ func (c *config) loadConfigFromArgs(log *zap.Logger, cmd *cobra.Command) {
 	if cmd.Flags().Changed("stream-initial-buffer-mb") {
 		os.Setenv("STREAM_INITIAL_BUFFER_MB", strconv.Itoa(streamInitialBufferMB))
 	}
+	streamOpenEndedChunkMB, _ := cmd.Flags().GetInt("stream-open-ended-chunk-mb")
+	if cmd.Flags().Changed("stream-open-ended-chunk-mb") {
+		os.Setenv("STREAM_OPEN_ENDED_CHUNK_MB", strconv.Itoa(streamOpenEndedChunkMB))
+	}
 	streamTimeoutSec, _ := cmd.Flags().GetInt("stream-timeout-sec")
 	if streamTimeoutSec != 0 {
 		os.Setenv("STREAM_TIMEOUT_SEC", strconv.Itoa(streamTimeoutSec))
@@ -297,6 +303,10 @@ func Load(log *zap.Logger, cmd *cobra.Command) {
 	if ValueOf.StreamInitialBufferMB < 0 {
 		log.Sugar().Info("STREAM_INITIAL_BUFFER_MB can't be negative, defaulting to 4")
 		ValueOf.StreamInitialBufferMB = 4
+	}
+	if ValueOf.StreamOpenEndedChunkMB < 0 {
+		log.Sugar().Info("STREAM_OPEN_ENDED_CHUNK_MB can't be negative, defaulting to 0")
+		ValueOf.StreamOpenEndedChunkMB = 0
 	}
 	if ValueOf.StreamTimeoutSec <= 0 {
 		log.Sugar().Info("STREAM_TIMEOUT_SEC must be greater than 0, defaulting to 30 seconds")

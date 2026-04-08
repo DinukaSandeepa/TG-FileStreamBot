@@ -217,6 +217,11 @@ func serveResolvedFile(ctx *gin.Context, worker *bot.Worker, file *types.File, d
 		}
 		start = ranges[0].Start
 		end = ranges[0].End
+		if !download {
+			if cappedEnd, capped := capOpenEndedRangeEnd(rangeHeader, start, end, file.FileSize); capped {
+				end = cappedEnd
+			}
+		}
 		ctx.Header("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, file.FileSize))
 		log.Info("Content-Range", zap.Int64("start", start), zap.Int64("end", end), zap.Int64("fileSize", file.FileSize))
 		w.WriteHeader(http.StatusPartialContent)
@@ -259,6 +264,61 @@ func serveResolvedFile(ctx *gin.Context, worker *bot.Worker, file *types.File, d
 func parseDownloadFlag(v string) bool {
 	v = strings.TrimSpace(strings.ToLower(v))
 	return v == "1" || v == "true" || v == "yes"
+}
+
+func capOpenEndedRangeEnd(rangeHeader string, start, end, fileSize int64) (int64, bool) {
+	if config.ValueOf.StreamOpenEndedChunkMB <= 0 {
+		return end, false
+	}
+	if !isOpenEndedRangeHeader(rangeHeader) {
+		return end, false
+	}
+
+	capBytes := int64(config.ValueOf.StreamOpenEndedChunkMB) * 1024 * 1024
+	if capBytes <= 0 {
+		return end, false
+	}
+
+	cappedEnd := start + capBytes - 1
+	if cappedEnd > end {
+		cappedEnd = end
+	}
+	if cappedEnd > fileSize-1 {
+		cappedEnd = fileSize - 1
+	}
+	if cappedEnd < start {
+		return end, false
+	}
+
+	if cappedEnd < end {
+		return cappedEnd, true
+	}
+
+	return end, false
+}
+
+func isOpenEndedRangeHeader(rangeHeader string) bool {
+	rangeHeader = strings.TrimSpace(strings.ToLower(rangeHeader))
+	if !strings.HasPrefix(rangeHeader, "bytes=") {
+		return false
+	}
+	spec := strings.TrimSpace(strings.TrimPrefix(rangeHeader, "bytes="))
+	if spec == "" || strings.Contains(spec, ",") {
+		return false
+	}
+	parts := strings.SplitN(spec, "-", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	startPart := strings.TrimSpace(parts[0])
+	endPart := strings.TrimSpace(parts[1])
+
+	if startPart == "" || endPart != "" {
+		return false
+	}
+
+	_, err := strconv.ParseInt(startPart, 10, 64)
+	return err == nil
 }
 
 func isSignRequestAuthorized(ctx *gin.Context) bool {
