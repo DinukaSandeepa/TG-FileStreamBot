@@ -127,6 +127,8 @@ func NewStreamPipe(
 
 	if p.readyBytes == 0 {
 		p.markReady()
+	} else if config.ValueOf.StreamInitialBufferMaxWaitSec > 0 {
+		go p.forceReadyAfterTimeout(time.Duration(config.ValueOf.StreamInitialBufferMaxWaitSec) * time.Second)
 	}
 
 	// start prefetching in background
@@ -189,6 +191,21 @@ func (p *StreamPipe) markReady() {
 	p.readyOnce.Do(func() {
 		close(p.bufferReady)
 	})
+}
+
+func (p *StreamPipe) forceReadyAfterTimeout(timeout time.Duration) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		p.log.Debug("startup prebuffer wait timeout reached; starting stream with available data", zap.Duration("timeout", timeout), zap.Int64("targetBytes", p.readyBytes))
+		p.markReady()
+	case <-p.bufferReady:
+		return
+	case <-p.ctx.Done():
+		return
+	}
 }
 
 // prefetch runs in a goroutine, fetching blocks concurrently and sending to blockQueue.

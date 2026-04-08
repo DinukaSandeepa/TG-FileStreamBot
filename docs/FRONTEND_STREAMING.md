@@ -36,6 +36,7 @@ Your stream service must have these configured:
 - STREAM_CONCURRENCY (optional, default 4)
 - STREAM_BUFFER_COUNT (optional, default 8)
 - STREAM_INITIAL_BUFFER_MB (optional, default 4)
+- STREAM_INITIAL_BUFFER_MAX_WAIT_SEC (optional, default 10)
 - STREAM_OPEN_ENDED_CHUNK_MB (optional, default 0)
 - STREAM_TIMEOUT_SEC (optional, default 30)
 - STREAM_MAX_RETRIES (optional, default 3)
@@ -116,6 +117,7 @@ Recommended tuning (start here, then adjust):
 - STREAM_CONCURRENCY=6
 - STREAM_BUFFER_COUNT=16
 - STREAM_INITIAL_BUFFER_MB=8
+- STREAM_INITIAL_BUFFER_MAX_WAIT_SEC=8
 - STREAM_OPEN_ENDED_CHUNK_MB=12
 - STREAM_TIMEOUT_SEC=45
 - STREAM_MAX_RETRIES=5
@@ -123,9 +125,10 @@ Recommended tuning (start here, then adjust):
 Notes:
 
 - Set STREAM_INITIAL_BUFFER_MB=0 to disable startup prebuffer.
-- Set STREAM_OPEN_ENDED_CHUNK_MB=0 to disable open-ended range capping.
+- Set STREAM_INITIAL_BUFFER_MAX_WAIT_SEC=0 to wait indefinitely for full startup prebuffer target.
+- Set STREAM_OPEN_ENDED_CHUNK_MB=0 to disable playback range capping.
 - Higher STREAM_BUFFER_COUNT and STREAM_INITIAL_BUFFER_MB improve smoothness but increase RAM use per active stream.
-- STREAM_OPEN_ENDED_CHUNK_MB helps unstable links by splitting large open-ended playback requests into shorter 206 chunks.
+- STREAM_OPEN_ENDED_CHUNK_MB helps unstable links by splitting large playback range requests into shorter 206 chunks.
 - Keep your frontend player preload as `auto` to allow browser-side buffering.
 
 ## Frontend player example (React)

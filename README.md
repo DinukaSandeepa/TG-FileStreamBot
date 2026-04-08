@@ -17,7 +17,26 @@
   </p>
 </p>
 
-## Documentation
+
+## 🚀 Deploy to DigitalOcean App Platform
+
+You can deploy this bot to DigitalOcean App Platform in a few clicks:
+
+1. **Fork or clone this repo and push to your own GitHub.**
+2. **Go to [DigitalOcean App Platform](https://cloud.digitalocean.com/apps).**
+3. **Click “Create App” and connect your GitHub repo.**
+4. **Select “Go” as the build environment.**
+5. **Set the run command:**
+  ```
+  go run ./cmd/fsb run
+  ```
+6. **Add all required environment variables (see `.env` or README above).**
+7. **Choose your plan and deploy!**
+
+[![Deploy to DigitalOcean](https://www.digitalocean.com/_next/static/media/deploy-to-do-btn.6c9b7b7e.svg)](https://cloud.digitalocean.com/apps)
+
+---
+
 
 - Frontend streaming integration: [docs/FRONTEND_STREAMING.md](docs/FRONTEND_STREAMING.md)
 - Heroku one-click deployment: [docs/HEROKU_ONE_CLICK.md](docs/HEROKU_ONE_CLICK.md)
@@ -60,7 +79,8 @@ For smoother playback on unstable/VPN networks, tune:
 - `STREAM_CONCURRENCY` (default `4`)
 - `STREAM_BUFFER_COUNT` (default `8`)
 - `STREAM_INITIAL_BUFFER_MB` (default `4`, set `0` to disable startup prebuffer)
-- `STREAM_OPEN_ENDED_CHUNK_MB` (default `0`, caps `bytes=start-` requests; `0` disables)
+- `STREAM_INITIAL_BUFFER_MAX_WAIT_SEC` (default `10`, maximum startup prebuffer wait; `0` waits indefinitely)
+- `STREAM_OPEN_ENDED_CHUNK_MB` (default `0`, caps large playback range requests; `0` disables)
 - `STREAM_TIMEOUT_SEC` (default `30`)
 - `STREAM_MAX_RETRIES` (default `3`)
 
@@ -69,6 +89,7 @@ Recommended starting values for laggy VPN/mobile networks:
 - `STREAM_CONCURRENCY=6`
 - `STREAM_BUFFER_COUNT=16`
 - `STREAM_INITIAL_BUFFER_MB=8`
+- `STREAM_INITIAL_BUFFER_MAX_WAIT_SEC=8`
 - `STREAM_OPEN_ENDED_CHUNK_MB=12`
 - `STREAM_TIMEOUT_SEC=45`
 - `STREAM_MAX_RETRIES=5`
@@ -111,6 +132,7 @@ Use returned `url` in your website player.
 STREAM_CONCURRENCY=6
 STREAM_BUFFER_COUNT=16
 STREAM_INITIAL_BUFFER_MB=8
+STREAM_INITIAL_BUFFER_MAX_WAIT_SEC=8
 STREAM_OPEN_ENDED_CHUNK_MB=12
 STREAM_TIMEOUT_SEC=45
 STREAM_MAX_RETRIES=5
@@ -131,6 +153,7 @@ go run ./cmd/fsb run \
   --stream-concurrency=6 \
   --stream-buffer-count=16 \
   --stream-initial-buffer-mb=8 \
+  --stream-initial-buffer-max-wait-sec=8 \
   --stream-open-ended-chunk-mb=12 \
   --stream-timeout-sec=45 \
   --stream-max-retries=5
@@ -169,7 +192,8 @@ This project now supports streaming files directly from existing MongoDB metadat
 - `STREAM_CONCURRENCY` - Parallel Telegram block downloads per stream request (default: `4`)
 - `STREAM_BUFFER_COUNT` - Prefetch queue capacity in blocks (default: `8`)
 - `STREAM_INITIAL_BUFFER_MB` - Initial server-side prebuffer before first byte is sent (default: `4`, `0` disables)
-- `STREAM_OPEN_ENDED_CHUNK_MB` - Caps open-ended `Range: bytes=start-` playback requests to this many MB (default: `0`, disabled)
+- `STREAM_INITIAL_BUFFER_MAX_WAIT_SEC` - Startup prebuffer timeout before stream starts with available data (default: `10`, `0` waits indefinitely)
+- `STREAM_OPEN_ENDED_CHUNK_MB` - Caps large playback `Range` requests to this many MB (default: `0`, disabled)
 - `STREAM_TIMEOUT_SEC` - Per-block Telegram fetch timeout (default: `30`)
 - `STREAM_MAX_RETRIES` - Retry attempts per failed block (default: `3`)
 

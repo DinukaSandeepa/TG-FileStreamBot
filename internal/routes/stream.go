@@ -208,7 +208,18 @@ func serveResolvedFile(ctx *gin.Context, worker *bot.Worker, file *types.File, d
 	if rangeHeader == "" {
 		start = 0
 		end = file.FileSize - 1
-		w.WriteHeader(http.StatusOK)
+		if !download {
+			if cappedEnd, capped := capPlaybackRangeEnd(start, end, file.FileSize); capped {
+				end = cappedEnd
+				ctx.Header("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, file.FileSize))
+				log.Info("Content-Range", zap.Int64("start", start), zap.Int64("end", end), zap.Int64("fileSize", file.FileSize), zap.Bool("capped", true), zap.String("reason", "no-range-request"))
+				w.WriteHeader(http.StatusPartialContent)
+			} else {
+				w.WriteHeader(http.StatusOK)
+			}
+		} else {
+			w.WriteHeader(http.StatusOK)
+		}
 	} else {
 		ranges, err := range_parser.Parse(file.FileSize, r.Header.Get("Range"))
 		if err != nil {
@@ -218,12 +229,13 @@ func serveResolvedFile(ctx *gin.Context, worker *bot.Worker, file *types.File, d
 		start = ranges[0].Start
 		end = ranges[0].End
 		if !download {
-			if cappedEnd, capped := capOpenEndedRangeEnd(rangeHeader, start, end, file.FileSize); capped {
+			if cappedEnd, capped := capPlaybackRangeEnd(start, end, file.FileSize); capped {
+				log.Info("capped playback range", zap.String("requestedRange", rangeHeader), zap.Int64("start", start), zap.Int64("requestedEnd", end), zap.Int64("cappedEnd", cappedEnd), zap.Int("chunkMB", config.ValueOf.StreamOpenEndedChunkMB))
 				end = cappedEnd
 			}
 		}
 		ctx.Header("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, file.FileSize))
-		log.Info("Content-Range", zap.Int64("start", start), zap.Int64("end", end), zap.Int64("fileSize", file.FileSize))
+		log.Info("Content-Range", zap.Int64("start", start), zap.Int64("end", end), zap.Int64("fileSize", file.FileSize), zap.Bool("capped", end < ranges[0].End))
 		w.WriteHeader(http.StatusPartialContent)
 	}
 
@@ -266,11 +278,8 @@ func parseDownloadFlag(v string) bool {
 	return v == "1" || v == "true" || v == "yes"
 }
 
-func capOpenEndedRangeEnd(rangeHeader string, start, end, fileSize int64) (int64, bool) {
+func capPlaybackRangeEnd(start, end, fileSize int64) (int64, bool) {
 	if config.ValueOf.StreamOpenEndedChunkMB <= 0 {
-		return end, false
-	}
-	if !isOpenEndedRangeHeader(rangeHeader) {
 		return end, false
 	}
 
@@ -295,30 +304,6 @@ func capOpenEndedRangeEnd(rangeHeader string, start, end, fileSize int64) (int64
 	}
 
 	return end, false
-}
-
-func isOpenEndedRangeHeader(rangeHeader string) bool {
-	rangeHeader = strings.TrimSpace(strings.ToLower(rangeHeader))
-	if !strings.HasPrefix(rangeHeader, "bytes=") {
-		return false
-	}
-	spec := strings.TrimSpace(strings.TrimPrefix(rangeHeader, "bytes="))
-	if spec == "" || strings.Contains(spec, ",") {
-		return false
-	}
-	parts := strings.SplitN(spec, "-", 2)
-	if len(parts) != 2 {
-		return false
-	}
-	startPart := strings.TrimSpace(parts[0])
-	endPart := strings.TrimSpace(parts[1])
-
-	if startPart == "" || endPart != "" {
-		return false
-	}
-
-	_, err := strconv.ParseInt(startPart, 10, 64)
-	return err == nil
 }
 
 func isSignRequestAuthorized(ctx *gin.Context) bool {
