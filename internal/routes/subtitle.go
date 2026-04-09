@@ -73,14 +73,13 @@ func getDBSubtitleRoute(ctx *gin.Context) {
 		return
 	}
 
-	sourceChannel := subtitleSourceChannelID(subtitle)
-	if sourceChannel == 0 {
+	if len(subtitleSourceChannelCandidates(subtitle)) == 0 {
 		http.Error(ctx.Writer, "subtitle source channel is not configured", http.StatusInternalServerError)
 		return
 	}
 
 	worker := bot.GetNextWorker()
-	file, err := utils.FileFromChannelMessage(ctx, worker.Client, sourceChannel, subtitle.MessageID)
+	file, _, err := resolveSubtitleFile(ctx, worker, subtitle)
 	if err != nil {
 		http.Error(ctx.Writer, err.Error(), http.StatusBadRequest)
 		return
@@ -143,6 +142,78 @@ func subtitleSourceChannelID(subtitle *subtitles.SubtitleRef) int64 {
 		return subtitle.SourceChannel
 	}
 	return config.ValueOf.SubtitleChannelID
+}
+
+func subtitleSourceChannelCandidates(subtitle *subtitles.SubtitleRef) []int64 {
+	candidates := make([]int64, 0, 3)
+	seen := make(map[int64]struct{}, 3)
+	addCandidate := func(channelID int64) {
+		if channelID == 0 {
+			return
+		}
+		if _, exists := seen[channelID]; exists {
+			return
+		}
+		seen[channelID] = struct{}{}
+		candidates = append(candidates, channelID)
+	}
+
+	if subtitle != nil {
+		addCandidate(subtitle.SourceChannel)
+	}
+	addCandidate(config.ValueOf.SubtitleChannelID)
+	addCandidate(config.ValueOf.LogChannelID)
+
+	return candidates
+}
+
+func shouldRetrySubtitleSource(err error) bool {
+	if err == nil {
+		return false
+	}
+	errString := strings.ToLower(err.Error())
+	return strings.Contains(errString, "channel_invalid") ||
+		strings.Contains(errString, "failed to resolve channel") ||
+		strings.Contains(errString, "no channels found")
+}
+
+func resolveSubtitleFile(ctx *gin.Context, worker *bot.Worker, subtitle *subtitles.SubtitleRef) (*types.File, int64, error) {
+	channels := subtitleSourceChannelCandidates(subtitle)
+	if len(channels) == 0 {
+		return nil, 0, fmt.Errorf("subtitle source channel is not configured")
+	}
+
+	var lastErr error
+	for i, sourceChannel := range channels {
+		file, err := utils.FileFromChannelMessage(ctx, worker.Client, sourceChannel, subtitle.MessageID)
+		if err == nil {
+			if i > 0 {
+				subtitleLog.Warn("Resolved subtitle using fallback channel",
+					zap.String("subtitleID", subtitle.ID.Hex()),
+					zap.Int("messageID", subtitle.MessageID),
+					zap.Int64("sourceChannel", sourceChannel),
+				)
+			}
+			return file, sourceChannel, nil
+		}
+
+		lastErr = err
+		if i == len(channels)-1 || !shouldRetrySubtitleSource(err) {
+			return nil, 0, err
+		}
+
+		subtitleLog.Warn("Failed subtitle source channel, trying fallback",
+			zap.String("subtitleID", subtitle.ID.Hex()),
+			zap.Int("messageID", subtitle.MessageID),
+			zap.Int64("sourceChannel", sourceChannel),
+			zap.Error(err),
+		)
+	}
+
+	if lastErr != nil {
+		return nil, 0, lastErr
+	}
+	return nil, 0, fmt.Errorf("subtitle source channel is not configured")
 }
 
 func buildPublicBaseURL(ctx *gin.Context) string {
